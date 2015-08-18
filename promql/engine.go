@@ -718,7 +718,7 @@ func (ev *evaluator) vectorSelector(node *VectorSelector) Vector {
 	vec := Vector{}
 	for fp, it := range node.iterators {
 		sampleCandidates := it.ValueAtTime(ev.Timestamp.Add(-node.Offset))
-		samplePair := chooseClosestSample(sampleCandidates, ev.Timestamp.Add(-node.Offset))
+		samplePair := chooseClosestBefore(sampleCandidates, ev.Timestamp.Add(-node.Offset))
 		if samplePair != nil {
 			vec = append(vec, &Sample{
 				Metric:    node.metrics[fp],
@@ -1168,17 +1168,14 @@ func shouldDropMetricName(op itemType) bool {
 // series is considered stale.
 var StalenessDelta = 5 * time.Minute
 
-// chooseClosestSample chooses the closest sample of a list of samples
-// surrounding a given target time. If samples are found both before and after
-// the target time, the sample value is interpolated between these. Otherwise,
-// the single closest sample is returned verbatim.
-func chooseClosestSample(samples metric.Values, timestamp clientmodel.Timestamp) *metric.SamplePair {
+// chooseClosestBefore chooses the closest sample of a list of samples
+// before or at a given target time.
+func chooseClosestBefore(samples metric.Values, timestamp clientmodel.Timestamp) *metric.SamplePair {
 	var closestBefore *metric.SamplePair
-	var closestAfter *metric.SamplePair
 	for _, candidate := range samples {
 		delta := candidate.Timestamp.Sub(timestamp)
-		// Samples before target time.
-		if delta < 0 {
+		// Samples before or at target time.
+		if delta <= 0 {
 			// Ignore samples outside of staleness policy window.
 			if -delta > StalenessDelta {
 				continue
@@ -1190,45 +1187,8 @@ func chooseClosestSample(samples metric.Values, timestamp clientmodel.Timestamp)
 			sample := candidate
 			closestBefore = &sample
 		}
-
-		// Samples after target time.
-		if delta >= 0 {
-			// Ignore samples outside of staleness policy window.
-			if delta > StalenessDelta {
-				continue
-			}
-			// Ignore samples that are farther away than samples we've seen before.
-			if closestAfter != nil && candidate.Timestamp.After(closestAfter.Timestamp) {
-				continue
-			}
-			sample := candidate
-			closestAfter = &sample
-		}
 	}
-
-	switch {
-	case closestBefore != nil && closestAfter != nil:
-		return interpolateSamples(closestBefore, closestAfter, timestamp)
-	case closestBefore != nil:
-		return closestBefore
-	default:
-		return closestAfter
-	}
-}
-
-// interpolateSamples interpolates a value at a target time between two
-// provided sample pairs.
-func interpolateSamples(first, second *metric.SamplePair, timestamp clientmodel.Timestamp) *metric.SamplePair {
-	dv := second.Value - first.Value
-	dt := second.Timestamp.Sub(first.Timestamp)
-
-	dDt := dv / clientmodel.SampleValue(dt)
-	offset := clientmodel.SampleValue(timestamp.Sub(first.Timestamp))
-
-	return &metric.SamplePair{
-		Value:     first.Value + (offset * dDt),
-		Timestamp: timestamp,
-	}
+	return closestBefore
 }
 
 // A queryGate controls the maximum number of concurrently running and waiting queries.
